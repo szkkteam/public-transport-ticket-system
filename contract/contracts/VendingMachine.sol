@@ -2,14 +2,12 @@
 pragma solidity 0.8.7;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
 import "./Ticket.sol";
-import "./Pass.sol";
-import "./IConsumable.sol";
 
-contract VendingMachine is Ownable {
+contract VendingMachine is Ownable, Pausable {
 
     address public ticketAddress;
-    address public passAddress;
 
     enum TicketType {
         SINGLE_TICKET,
@@ -48,47 +46,66 @@ contract VendingMachine is Ownable {
         zone4
       */
 
-    constructor() {
-        ticketAddress = address(0);
-        passAddress = address(0);
+    constructor(address _ticketAddress) {
+        require(_ticketAddress != address(0), "Invalid ticket addresses");
 
-        _createTicket();
-        _createPass();
+        ticketAddress = _ticketAddress;
+
+        // Pause untill the prices are set
+        _pause();
+
     }
 
-    function _createTicket() internal {
-        require(ticketAddress == address(0), "Ticket already created");
-        Ticket ticket = new Ticket();
-
-        ticketAddress = address(ticket);
-    }
-
-    function _createPass() internal {
-        require(passAddress == address(0), "Pass already created");
-        Pass pass = new Pass();
-
-        passAddress = address(pass);
+    function _getValidTo(uint64 validFrom, uint8 ticketType) private pure returns (uint64) {
+        if (ticketType == (uint8(TicketType.DAILY))) {
+            return validFrom + 1 days;
+        } else if (ticketType == (uint8(TicketType.WEEKLY))) { 
+            return validFrom + 1 weeks;
+        } else if (ticketType == (uint8(TicketType.MONTHLY))) { 
+            return validFrom + 30 days; // TODO: fix this
+        } else if (ticketType == (uint8(TicketType.YEARLY))) { 
+            return validFrom + 365 days;
+        } else {
+            return validFrom;
+        }
     }
 
     function updatePrices(uint256[][] memory priceMap) public onlyOwner {
+        // TODO: Sanity check for x dimension, eg single ticket, daily, weekly, monthly and yearly is fixed. The zones are up to the owner
         _priceMap = priceMap;
+        if (paused()) {
+            _unpause();
+        }
 
     }
 
-    function getTicketBuyPrice() public returns (uint256) {
+    // TODO: Get number of zones, based on price map
 
+    function getPrice(uint8 ticketType, uint8 zone) public view returns (uint256) {
+        return _priceMap[zone][ticketType];
     }
 
-    function buyTicket() external payable {
-        // TODO: based on pricing table, estiamte the price
+    function buyTicket(uint8 zone, uint8 amount) external payable whenNotPaused {
+        uint256 price = getPrice(uint8(TicketType.SINGLE_TICKET), zone);
+
+        require(msg.value >= (price * amount), "Insufficient funds");
+
+        Ticket ticket = Ticket(ticketAddress);
+        for(uint8 i = 0; i < amount; ++i) {                
+                ticket.mint(_msgSender(), zone, 0, 0);
+        }
     }
 
-    function buyPass() external payable {
+    function buyPass(uint8 ticketType, uint8 zone, uint64 validFrom) external payable whenNotPaused {
+        uint256 price = getPrice(ticketType, zone);
 
-    }
+        require(ticketType > uint8(TicketType.SINGLE_TICKET), "Invalid type");
+        require(msg.value >= (price), "Insufficient funds");
 
-    function isTicketValid(uint256 id) external returns (bool) {
+        Ticket ticket = Ticket(ticketAddress);
 
+        uint64 validTo = _getValidTo(validFrom, ticketType);
+        ticket.mint(_msgSender(), zone, validFrom, validTo);
     }
 
 
